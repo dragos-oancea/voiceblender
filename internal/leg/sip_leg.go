@@ -1072,6 +1072,8 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 	// the decoded samples.
 	pkt := &rtp.Packet{}
 	var decoded []int16
+	var lastSSRC uint32
+	var haveSSRC bool
 	for {
 		// Set read deadline for RTP timeout detection.
 		// When held, use a very long deadline (beyond hold timer) to avoid
@@ -1211,6 +1213,12 @@ func (l *SIPLeg) readLoop(s *mediaStream) {
 		// inFrames with drop-oldest-on-overflow (preserves legacy
 		// passthrough behavior).
 		if s.jb != nil {
+			// A new source starts its own random seq space; the old cursor
+			// would drop it as late.
+			if haveSSRC && pkt.SSRC != lastSSRC {
+				s.jb.Reset()
+			}
+			lastSSRC, haveSSRC = pkt.SSRC, true
 			s.jb.Push(pkt.SequenceNumber, pcm)
 			continue
 		}

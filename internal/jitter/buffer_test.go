@@ -195,3 +195,51 @@ func TestBuffer_CopiesInput(t *testing.T) {
 		t.Fatal("expected independent slices after caller mutation")
 	}
 }
+
+// playSilentTicks pushes one frame and pops one per 20 ms tick and counts
+// the ticks that produced no audio.
+func playSilentTicks(b *Buffer, seq uint16, ticks int) (silent int, next uint16) {
+	for i := 0; i < ticks; i++ {
+		b.Push(seq, []byte{byte(i)})
+		seq++
+		if _, ok := b.Pop(); !ok {
+			silent++
+		}
+	}
+	return silent, seq
+}
+
+func TestSeqRestartBehindCursorResyncs(t *testing.T) {
+	b := New(3, 10)
+	playSilentTicks(b, 30000, 100)
+	// New source with a seq "behind" the cursor: must not be dropped as late.
+	silent, _ := playSilentTicks(b, 1000, 500)
+	if silent > 3 {
+		t.Fatalf("seq restart behind cursor: %d silent ticks, want <= 3 (re-warm only)", silent)
+	}
+}
+
+func TestSeqRestartAheadOfCursorResyncs(t *testing.T) {
+	b := New(3, 10)
+	playSilentTicks(b, 1000, 100)
+	silent, _ := playSilentTicks(b, 20000, 500)
+	if silent > 3 {
+		t.Fatalf("seq restart ahead of cursor: %d silent ticks, want <= 3 (re-warm only)", silent)
+	}
+}
+
+func TestLateFrameNearCursorStillDropped(t *testing.T) {
+	b := New(1, 10)
+	b.Push(100, []byte{1})
+	b.Push(101, []byte{2})
+	if _, ok := b.Pop(); !ok {
+		t.Fatal("expected frame 100")
+	}
+	b.Push(99, []byte{9}) // genuinely late: must be dropped, not trigger a resync
+	if got := b.Len(); got != 1 {
+		t.Fatalf("late frame changed buffer: len %d want 1", got)
+	}
+	if pcm, ok := b.Pop(); !ok || pcm[0] != 2 {
+		t.Fatalf("expected frame 101 next, got %v %v", pcm, ok)
+	}
+}
