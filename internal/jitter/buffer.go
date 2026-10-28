@@ -10,6 +10,10 @@ func SeqLess(a, b uint16) bool {
 	return a != b && uint16(b-a) < 0x8000
 }
 
+// resyncFrames is how far (in frames, ~2 s at 20 ms) a seq may sit from the
+// play cursor before it is treated as a sequence restart rather than jitter.
+const resyncFrames = 100
+
 type frame struct {
 	seq uint16
 	pcm []byte
@@ -68,8 +72,16 @@ func (b *Buffer) Push(seq uint16, pcm []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.hasCursor && !SeqLess(b.cursor, seq) && seq != b.cursor {
-		return
+	if b.hasCursor {
+		d := int(int16(seq - b.cursor))
+		limit := max(resyncFrames, 2*b.maxFrames)
+		if d < -limit || d > limit {
+			// Too far from the cursor to be reordering or loss: the sender
+			// restarted its sequence numbers.
+			b.resetLocked()
+		} else if d < 0 {
+			return
+		}
 	}
 
 	i := len(b.frames)
@@ -138,6 +150,10 @@ func (b *Buffer) Len() int {
 func (b *Buffer) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.resetLocked()
+}
+
+func (b *Buffer) resetLocked() {
 	b.frames = b.frames[:0]
 	b.hasCursor = false
 	b.warming = true
